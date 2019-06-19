@@ -1,0 +1,32 @@
+name: dsvi
+
+channels:
+  - conda-forge
+
+dependencies:
+  - conda-build
+  - python=3.7
+  - pip
+
+  # Package dependencies
+  - numpy
+  - scipy
+  - matplotlib
+
+  # Executable dependencies
+  - ipykernel
+
+  # Development dependencies
+  - black
+  - flake8-blind-except
+  - flake8-builtins
+  - flake8-docstrings
+  - flake8-mutable
+  - isort
+  - mypy
+  - pytest
+
+  - pip:
+    - flake8-bugbear
+    - tensorflow==2.0.0-beta1
+    - tensorflow-probability==0.7.0rc0
