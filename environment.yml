@@ -1,6 +1,8 @@
 name: dsvi
 
 channels:
+  - pytorch
+  - gpytorch
   - conda-forge
 
 dependencies:
@@ -9,9 +11,11 @@ dependencies:
   - pip
 
   # Package dependencies
-  - numpy
-  - scipy
+  - gpytorch
   - matplotlib
+  - numpy
+  - pytorch
+  - scipy
 
   # Executable dependencies
   - ipykernel
@@ -28,5 +32,3 @@ dependencies:
 
   - pip:
     - flake8-bugbear
-    - tensorflow==2.0.0-beta1
-    - tensorflow-probability==0.7.0rc0
