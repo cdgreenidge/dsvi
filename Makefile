@@ -1,6 +1,6 @@
 PROJECT=dsvi
 
-PYTHON_SOURCE_DIRS=bin $(PROJECT)
+PYTHON_SOURCE_DIRS=$(PROJECT)
 
 all: format check
 
