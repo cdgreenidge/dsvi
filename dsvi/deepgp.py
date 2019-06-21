@@ -1,4 +1,6 @@
 """An implementation of deep Gaussian Processes with DSVI inference."""
+from typing import Iterable, Union
+
 import gpytorch.kernels as kernels
 import torch
 import torch.distributions as dist
@@ -6,7 +8,7 @@ import torch.nn as nn
 import torch.quasirandom
 
 
-class DGPLayer(nn.Module):
+class DeepGPLayer(nn.Module):
     """A deep Gaussian Process prior layer.
 
     Args:
@@ -106,7 +108,7 @@ class DGPLayer(nn.Module):
         if not self.training:
             return f_mean.t()
 
-        # f_cov no batch dim, so we will have to add one later.
+        # f_cov has no batch dim, so we will have to add one later.
         f_cov = self.kernel(x, x, diag=True) - (alpha * (kzz @ alpha)).sum(dim=0)
 
         # We don't use PyTorch's KL divergence calculation because it doesn't take
@@ -121,5 +123,65 @@ class DGPLayer(nn.Module):
         k = self.output_dim * self.num_inducing
         self.kl_regularization = 0.5 * (trace + invquad - k + logdet_1 - logdet_0)
 
-        f_dist = dist.Independent(dist.Normal(f_mean, f_cov.unsqueeze(0)), 1)
+        f_dist = dist.Independent(
+            dist.Normal(f_mean, torch.sqrt(f_cov.unsqueeze(0))), 1
+        )
         return f_dist.rsample().t()
+
+
+def _validate_input(x: torch.Tensor) -> None:
+    """Validate input for a likelihood (output) layer.
+
+    Args:
+        x: The input tensor to ``self.forward()``.
+
+    Raises:
+        ValueError: If X is not of shape ``(n, 1)``.
+
+    """
+    if x.dim() != 2 or x.size()[1] != 1:
+        msg = "Input must be of size (n, 1), got {0}"
+        raise ValueError(msg.format(tuple(x.size())))
+
+
+class ExpPoisson(nn.Module):
+    """A Poisson distribution output layer with exp nonlinearity."""
+
+    def forward(self, x: torch.Tensor) -> dist.Independent:  # type: ignore
+        """Output a Poisson distribution parameterized by ``exp(x)``."""
+        _validate_input(x)
+        return dist.Independent(dist.Poisson(torch.exp(x)), 1)
+
+
+class Gaussian(nn.Module):
+    """A Gaussian distribution output layer with trainable variance."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, x: torch.Tensor) -> dist.Independent:  # type: ignore
+        """Output a Gaussian distribution parameterized by ``N(x, self.scale^2)``."""
+        _validate_input(x)
+        return dist.Independent(dist.Normal(x, self.scale), 1)
+
+
+class LogisticBernoulli(nn.Module):
+    """A Bernoulli distribution output layer with logistic nonlinearity."""
+
+    def forward(self, x: torch.Tensor) -> dist.Independent:  # type: ignore
+        """Output a Bernoulli distribution with probabilities ``sigmoid(x)``."""
+        _validate_input(x)
+        return dist.Independent(dist.Bernoulli(torch.sigmoid(x)), 1)
+
+
+DeepGPLikelihood = Union[ExpPoisson, Gaussian, LogisticBernoulli]
+
+
+class DeepGP(nn.Module):
+    """A Deep Gaussian Process."""
+
+    def __init__(
+        self, layers: Iterable[DeepGPLayer], likelihood: DeepGPLikelihood
+    ) -> None:
+        pass
