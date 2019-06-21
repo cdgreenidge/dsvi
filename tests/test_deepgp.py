@@ -12,6 +12,12 @@ def test_dgplayer_can_compute_predictions():
     assert output.size() == (10, 3)
 
 
+def test_dgplayer_computes_kl_regularization():
+    dgp = deepgp.DGPLayer(kernels.RBFKernel(), input_dim=2, output_dim=3, grid_num=4)
+    dgp(torch.rand(10, 2))
+    assert dgp.kl_regularization.item() >= 0.0
+
+
 def test_dgplayer_checks_constructor_args():
     with pytest.raises(ValueError):
         deepgp.DGPLayer(kernels.RBFKernel(), input_dim=0)

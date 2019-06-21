@@ -49,14 +49,17 @@ class DGPLayer(nn.Module):
         self.register_buffer("output_dim", torch.tensor(output_dim))
 
         self.inducing_locs = self.kernel.full_grid
-        num_inducing = self.inducing_locs.size()[0]
+        self.register_buffer("num_inducing", torch.tensor(self.inducing_locs.size()[0]))
 
         # Each of these parameters has shape (output_dim, num_inducing), i.e. they are
         # batched across output dimension
         self.inducing_means = nn.Parameter(
-            torch.t(torch.quasirandom.SobolEngine(self.output_dim).draw(num_inducing))
+            torch.quasirandom.SobolEngine(self.output_dim).draw(self.num_inducing).t()
         )
-        self.inducing_scales = nn.Parameter(torch.ones(self.output_dim, num_inducing))
+        self.inducing_scales = nn.Parameter(
+            torch.ones(self.output_dim, self.num_inducing)
+        )
+        self.register_buffer("kl_regularization", torch.tensor(0.0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
         """Evaluate the GP on the inputs ``x``.
@@ -106,7 +109,17 @@ class DGPLayer(nn.Module):
         # f_cov no batch dim, so we will have to add one later.
         f_cov = self.kernel(x, x, diag=True) - (alpha * (kzz @ alpha)).sum(dim=0)
 
-        # TODO: compute KL divergence regularization
+        # We don't use PyTorch's KL divergence calculation because it doesn't take
+        # advantage of GPyTorch
+        inducing_cov = torch.diag_embed(inducing_dist.variance)
+        trace = self.output_dim * torch.sum(
+            torch.diagonal(kzz.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
+        )
+        invquad, logdet_1 = kzz.inv_quad_logdet(self.inducing_means.t(), logdet=True)
+        logdet_1 = self.output_dim * logdet_1  # Scale logdet 1 for output dimensions
+        logdet_0 = torch.sum(torch.log(inducing_dist.variance))
+        k = self.output_dim * self.num_inducing
+        self.kl_regularization = 0.5 * (trace + invquad - k + logdet_1 - logdet_0)
 
         f_dist = dist.Independent(dist.Normal(f_mean, f_cov.unsqueeze(0)), 1)
         return f_dist.rsample().t()
