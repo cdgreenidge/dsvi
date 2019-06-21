@@ -1,4 +1,4 @@
-"""An implementation of doubly-stochastic variational inference."""
+"""An implementation of deep Gaussian Processes with DSVI inference."""
 import gpytorch.kernels as kernels
 import torch
 import torch.distributions as dist
@@ -28,6 +28,15 @@ class DGPLayer(nn.Module):
         grid_num: int = 128,
     ):
         super().__init__()
+
+        if input_dim <= 0:
+            raise ValueError("Input dim must be positive, got {0}".format(input_dim))
+        if output_dim <= 0:
+            raise ValueError("Output dim must be positive, got {0}".format(output_dim))
+        if grid_bound <= 0.0:
+            raise ValueError("Grid bound must be positive, got {0}".format(grid_bound))
+        if grid_num <= 0:
+            raise ValueError("Grid num must be positive, got {0}".format(grid_num))
 
         # TODO: Add option for external initialization, of both correct and incorrect
         # dimensionality
@@ -61,7 +70,11 @@ class DGPLayer(nn.Module):
             ``(n, output_dim)``.
 
         """
-        assert x.size()[1] == self.input_dim
+        if x.dim() != 2 or x.size()[1] != self.input_dim:
+            msg = "Input must be of size (n, {0}), got {1}".format(
+                self.input_dim, tuple(x.size())
+            )
+            raise ValueError(msg)
 
         # Calculate linear transformation W for mean function
         if self.input_dim == 1:

@@ -2,7 +2,7 @@ PROJECT=dsvi
 
 PYTHON_SOURCE_DIRS=$(PROJECT)
 
-all: format check
+all: format check test
 
 clean:
 	@echo "Not implemented"
@@ -30,5 +30,4 @@ help:
 	@echo "test:\tRun tests"
 
 test:
-	@echo "Not implemented"
-	# pytest -q -s
+	@pytest -q -s
