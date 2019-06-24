@@ -61,3 +61,22 @@ def test_deepgp_can_compute_outputs():
     dgp(torch.randn(10, 1))
     dgp.eval()
     dgp(torch.randn(10, 1))
+
+
+def test_deepgp_can_compute_kl_regularization():
+    dgp = deepgp.DeepGP(
+        layers=(deepgp.Layer(kernels.RBFKernel()), deepgp.Layer(kernels.RBFKernel())),
+        likelihood=deepgp.ExpPoisson(),
+    )
+    dgp(torch.randn(10, 1))
+    assert torch.is_tensor(dgp.kl_regularization)
+    assert dgp.kl_regularization > 0.0
+
+
+def test_deepgp_can_compute_negative_elbo_loss():
+    dgp = deepgp.DeepGP(
+        layers=(deepgp.Layer(kernels.RBFKernel()), deepgp.Layer(kernels.RBFKernel())),
+        likelihood=deepgp.ExpPoisson(),
+    )
+    elbo = dgp.negative_elbo(torch.randn(10, 1), torch.ones((10, 1)), num_data=10)
+    assert torch.is_tensor(elbo)

@@ -64,9 +64,7 @@ class Layer(nn.Module):
         self.register_buffer("kl_regularization", torch.tensor(0.0))
 
     def forward(  # type: ignore
-        self,
-        x: torch.Tensor,
-        compute_kl=False,  # TODO: set compute_kl to True by default
+        self, x: torch.Tensor, compute_kl=True
     ) -> torch.Tensor:
         """Evaluate the GP on the inputs ``x``.
 
@@ -213,8 +211,68 @@ class DeepGP(nn.Module):
         self.layers = nn.ModuleList(layers)
         self.likelihood = likelihood
 
-    def forward(self, x: torch.Tensor) -> dist.Distribution:  # type: ignore
-        """Evaluate the DeepGP model at the points in ``x``."""
+    @property
+    def kl_regularization(self) -> torch.Tensor:
+        """Return the layer-wise sum KL regularization.
+
+        This is usually computed during the ELBO evaluation.
+
+        """
+        kl_reg = sum(layer.kl_regularization for layer in self.layers)
+        assert torch.is_tensor(kl_reg)
+        return kl_reg  # type: ignore
+
+    def forward(  # type: ignore
+        self, x: torch.Tensor, compute_kl=True
+    ) -> dist.Distribution:
+        """Evaluate the DeepGP model at the points in ``x``.
+
+        Args:
+            x: A tensor of shape ``(n, input_dim_1)``, where input_dim_1 is the input
+            dimension of the first layer.
+            compute_kl: A boolean controlling whether or not to compute the KL
+                divergence.
+
+        Returns:
+            A distribution batched over ``n`` representing the Deep GP output.
+
+        """
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, compute_kl)
         return self.likelihood(x)
+
+    def negative_elbo(
+        self, x: torch.Tensor, y: torch.Tensor, num_data: int, num_samples: int = 8
+    ) -> torch.Tensor:
+        """Compute the negative ELBO loss.
+
+        Args:
+            x: a batch of inputs, of size ``(n, input_dim)``, where ``input_dim`` is the
+                input dimension of the first layer in the DeepGP.
+            y: a batch of labels, of size ``(n, output_dim)``, where ``output_dim`` is
+                the output dimension of the last layer in the DeepGP.
+            num_data: The number of items in the dataset.
+
+        Returns:
+            A scalar Tensor, the negative ELBO loss.
+
+        """
+        n = x.size()[0]
+        input_dim = self.layers[0].input_dim.item()
+        output_dim = self.layers[-1].output_dim.item()
+        if x.size() != (n, input_dim):
+            msg = "Expected x of size {0}, got {0}"
+            raise ValueError(msg.format((n, input_dim), tuple(x.size())))
+        if y.size() != (n, output_dim):
+            msg = "Expected y of size {0}, got {0}"
+            raise ValueError(msg.format((n, output_dim), tuple(y.size())))
+
+        running_sum = torch.tensor(0.0, device=x.device)
+        for _ in range(num_samples - 1):
+            running_sum += self.forward(x, compute_kl=False).log_prob(y).sum()
+        running_sum += self.forward(x, compute_kl=True).log_prob(y).sum()
+        likelihood = running_sum / num_samples
+        scaling = num_data / x.size()[0]
+
+        elbo = scaling * likelihood - self.kl_regularization
+        return -elbo
