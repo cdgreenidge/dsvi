@@ -110,10 +110,15 @@ class Layer(nn.Module):
             return f_mean.t()
 
         # f_cov has no batch dim, so we will have to add one later.
-        # We have to reconstruct the lazy kernel to avoid backprop errors. I'm not sure
-        # why this doesn't happen in simple examples
+        # We also have to reconstruct the lazy kernel to avoid freeing the computation
+        # graph twice because the lazy kernel is a leaky abstraction.
+        # It took me a whole afternoon to figure this out.
+
+        # I'm not bitter.
         kzz1 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
         f_cov = self.kernel(x, x, diag=True) - (alpha * (kzz1 @ alpha)).sum(dim=0)
+
+        # Ok, that was a lie
 
         # We don't use PyTorch's KL divergence calculation because it doesn't take
         # advantage of GPyTorch

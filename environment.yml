@@ -18,7 +18,9 @@ dependencies:
   - scipy
 
   # Executable dependencies
+  - ignite
   - ipykernel
+  - scikit-learn
 
   # Development dependencies
   - black
