@@ -58,7 +58,10 @@ def test_deepgp_can_compute_outputs():
         layers=(deepgp.Layer(kernels.RBFKernel()), deepgp.Layer(kernels.RBFKernel())),
         likelihood=deepgp.ExpPoisson(),
     )
-    dgp(torch.randn(10, 1))
+    loss = dgp(torch.randn(10, 1)).log_prob(torch.ones(10, 1)).sum()
+    loss.backward()
+    loss = dgp(torch.randn(10, 1)).log_prob(torch.ones(10, 1)).sum()
+    loss.backward()
     dgp.eval()
     dgp(torch.randn(10, 1))
 
@@ -79,4 +82,17 @@ def test_deepgp_can_compute_negative_elbo_loss():
         likelihood=deepgp.ExpPoisson(),
     )
     elbo = dgp.negative_elbo(torch.randn(10, 1), torch.ones((10, 1)), num_data=10)
+    elbo.backward()
+    elbo = dgp.negative_elbo(torch.randn(10, 1), torch.ones((10, 1)), num_data=10)
+    elbo.backward()
     assert torch.is_tensor(elbo)
+
+
+def test_deepgp_can_backward_with_more_than_one_dim():
+    dgp = deepgp.DeepGP(
+        layers=(
+            deepgp.Layer(kernels.RBFKernel(), input_dim=2, output_dim=1, grid_num=4),
+        ),
+        likelihood=deepgp.ExpPoisson(),
+    )
+    dgp.forward(torch.randn(10, 2)).mean.sum().backward()

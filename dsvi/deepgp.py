@@ -1,6 +1,7 @@
 """An implementation of deep Gaussian Processes with DSVI inference."""
 from typing import Iterable, Union
 
+import gpytorch.functions
 import gpytorch.kernels as kernels
 import torch
 import torch.distributions as dist
@@ -40,11 +41,8 @@ class Layer(nn.Module):
         if grid_num <= 0:
             raise ValueError("Grid num must be positive, got {0}".format(grid_num))
 
-        # TODO: Add option for external initialization, of both correct and incorrect
-        # dimensionality
-
         grid_1d = torch.linspace(-grid_bound, grid_bound, steps=grid_num)
-        grid = grid_1d[:, None].expand(-1, input_dim)
+        grid = grid_1d[:, None].repeat(1, input_dim)
         self.kernel = kernels.GridKernel(kernel, grid)
 
         self.register_buffer("input_dim", torch.tensor(input_dim))
@@ -56,7 +54,7 @@ class Layer(nn.Module):
         # Each of these parameters has shape (output_dim, num_inducing), i.e. they are
         # batched across output dimension
         self.inducing_means = nn.Parameter(
-            torch.quasirandom.SobolEngine(self.output_dim).draw(self.num_inducing).t()
+            torch.zeros((self.output_dim, self.num_inducing))
         )
         self.inducing_scales = nn.Parameter(
             torch.ones(self.output_dim, self.num_inducing)
@@ -90,9 +88,9 @@ class Layer(nn.Module):
         else:
             W = torch.svd(x, some=False)[2][:, 0]  # PCA mapping
 
-        kzz = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
+        kzz0 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
         kzx = self.kernel(self.inducing_locs, x).evaluate()
-        alpha = kzz.inv_matmul(kzx)
+        alpha = gpytorch.functions.inv_matmul(kzz0, kzx)
         inducing_dist = dist.Independent(
             dist.Normal(self.inducing_means, self.inducing_scales), 1
         )
@@ -112,16 +110,20 @@ class Layer(nn.Module):
             return f_mean.t()
 
         # f_cov has no batch dim, so we will have to add one later.
-        f_cov = self.kernel(x, x, diag=True) - (alpha * (kzz @ alpha)).sum(dim=0)
+        # We have to reconstruct the lazy kernel to avoid backprop errors. I'm not sure
+        # why this doesn't happen in simple examples
+        kzz1 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
+        f_cov = self.kernel(x, x, diag=True) - (alpha * (kzz1 @ alpha)).sum(dim=0)
 
         # We don't use PyTorch's KL divergence calculation because it doesn't take
         # advantage of GPyTorch
         if compute_kl:
             inducing_cov = torch.diag_embed(inducing_dist.variance)
+            kzz2 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
             trace = self.output_dim * torch.sum(
-                torch.diagonal(kzz.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
+                torch.diagonal(kzz2.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
             )
-            invquad, logdet_1 = kzz.inv_quad_logdet(
+            invquad, logdet_1 = kzz2.inv_quad_logdet(
                 self.inducing_means.t(), logdet=True
             )
             logdet_1 = self.output_dim * logdet_1  # Scale for output dimensions
@@ -260,18 +262,18 @@ class DeepGP(nn.Module):
         n = x.size()[0]
         input_dim = self.layers[0].input_dim.item()
         output_dim = self.layers[-1].output_dim.item()
-        if x.size() != (n, input_dim):
-            msg = "Expected x of size {0}, got {0}"
+        if tuple(x.size()) != (n, input_dim):
+            msg = "Expected x of size {0}, got {1}"
             raise ValueError(msg.format((n, input_dim), tuple(x.size())))
-        if y.size() != (n, output_dim):
-            msg = "Expected y of size {0}, got {0}"
+        if tuple(y.size()) != (n, output_dim):
+            msg = "Expected y of size {0}, got {1}"
             raise ValueError(msg.format((n, output_dim), tuple(y.size())))
 
-        running_sum = torch.tensor(0.0, device=x.device)
+        samples = []
         for _ in range(num_samples - 1):
-            running_sum += self.forward(x, compute_kl=False).log_prob(y).sum()
-        running_sum += self.forward(x, compute_kl=True).log_prob(y).sum()
-        likelihood = running_sum / num_samples
+            samples.append(self.forward(x, compute_kl=False).log_prob(y).sum())
+        samples.append(self.forward(x, compute_kl=True).log_prob(y).sum())
+        likelihood = sum(samples) / num_samples
         scaling = num_data / x.size()[0]
 
         elbo = scaling * likelihood - self.kl_regularization
