@@ -5,9 +5,9 @@
 # flake8: noqa
 from dsvi.deepgp import (
     DeepGP,
-    DeepGPLayer,
-    DeepGPLikelihood,
     ExpPoisson,
     Gaussian,
+    Layer,
+    Likelihood,
     LogisticBernoulli,
 )

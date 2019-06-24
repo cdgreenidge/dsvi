@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.quasirandom
 
 
-class DeepGPLayer(nn.Module):
+class Layer(nn.Module):
     """A deep Gaussian Process prior layer.
 
     Args:
@@ -63,11 +63,16 @@ class DeepGPLayer(nn.Module):
         )
         self.register_buffer("kl_regularization", torch.tensor(0.0))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # type: ignore
+    def forward(  # type: ignore
+        self,
+        x: torch.Tensor,
+        compute_kl=False,  # TODO: set compute_kl to True by default
+    ) -> torch.Tensor:
         """Evaluate the GP on the inputs ``x``.
 
         Args:
             x: A tensor of shape ``(n, input_dim)``.
+            compute_kl: Whether or not to compute the KL divergence regularization.
 
         Returns:
             In eval mode, the posterior mean of the GP predictions at ``x``. In train
@@ -83,7 +88,7 @@ class DeepGPLayer(nn.Module):
 
         # Calculate linear transformation W for mean function
         if self.input_dim == 1:
-            W = torch.eye(self.input_dim)
+            W = torch.ones((1,))
         else:
             W = torch.svd(x, some=False)[2][:, 0]  # PCA mapping
 
@@ -113,15 +118,20 @@ class DeepGPLayer(nn.Module):
 
         # We don't use PyTorch's KL divergence calculation because it doesn't take
         # advantage of GPyTorch
-        inducing_cov = torch.diag_embed(inducing_dist.variance)
-        trace = self.output_dim * torch.sum(
-            torch.diagonal(kzz.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
-        )
-        invquad, logdet_1 = kzz.inv_quad_logdet(self.inducing_means.t(), logdet=True)
-        logdet_1 = self.output_dim * logdet_1  # Scale logdet 1 for output dimensions
-        logdet_0 = torch.sum(torch.log(inducing_dist.variance))
-        k = self.output_dim * self.num_inducing
-        self.kl_regularization = 0.5 * (trace + invquad - k + logdet_1 - logdet_0)
+        if compute_kl:
+            inducing_cov = torch.diag_embed(inducing_dist.variance)
+            trace = self.output_dim * torch.sum(
+                torch.diagonal(kzz.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
+            )
+            invquad, logdet_1 = kzz.inv_quad_logdet(
+                self.inducing_means.t(), logdet=True
+            )
+            logdet_1 = self.output_dim * logdet_1  # Scale for output dimensions
+            logdet_0 = torch.sum(torch.log(inducing_dist.variance))
+            k = self.output_dim * self.num_inducing
+            self.kl_regularization = 0.5 * (trace + invquad - k + logdet_1 - logdet_0)
+        else:
+            self.kl_regularization = torch.tensor(0.0)
 
         f_dist = dist.Independent(
             dist.Normal(f_mean, torch.sqrt(f_cov.unsqueeze(0))), 1
@@ -144,44 +154,67 @@ def _validate_input(x: torch.Tensor) -> None:
         raise ValueError(msg.format(tuple(x.size())))
 
 
-class ExpPoisson(nn.Module):
+class Likelihood(nn.Module):
+    """A likelihood that takes a Tensor of parameters and outputs a distribution."""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor) -> dist.Distribution:  # type: ignore
+        """Output a distribution parameterized by x."""
+
+
+class ExpPoisson(Likelihood):
     """A Poisson distribution output layer with exp nonlinearity."""
 
-    def forward(self, x: torch.Tensor) -> dist.Independent:  # type: ignore
+    def forward(self, x: torch.Tensor) -> dist.Poisson:  # type: ignore
         """Output a Poisson distribution parameterized by ``exp(x)``."""
         _validate_input(x)
-        return dist.Independent(dist.Poisson(torch.exp(x)), 1)
+        return dist.Poisson(torch.exp(x))
 
 
-class Gaussian(nn.Module):
+class Gaussian(Likelihood):
     """A Gaussian distribution output layer with trainable variance."""
 
     def __init__(self) -> None:
         super().__init__()
         self.scale = nn.Parameter(torch.tensor(1.0))
 
-    def forward(self, x: torch.Tensor) -> dist.Independent:  # type: ignore
+    def forward(self, x: torch.Tensor) -> dist.Normal:  # type: ignore
         """Output a Gaussian distribution parameterized by ``N(x, self.scale^2)``."""
         _validate_input(x)
-        return dist.Independent(dist.Normal(x, self.scale), 1)
+        return dist.Normal(x, self.scale)
 
 
-class LogisticBernoulli(nn.Module):
+class LogisticBernoulli(Likelihood):
     """A Bernoulli distribution output layer with logistic nonlinearity."""
 
-    def forward(self, x: torch.Tensor) -> dist.Independent:  # type: ignore
+    def forward(self, x: torch.Tensor) -> dist.Bernoulli:  # type: ignore
         """Output a Bernoulli distribution with probabilities ``sigmoid(x)``."""
         _validate_input(x)
-        return dist.Independent(dist.Bernoulli(torch.sigmoid(x)), 1)
+        return dist.Bernoulli(torch.sigmoid(x))
 
 
 DeepGPLikelihood = Union[ExpPoisson, Gaussian, LogisticBernoulli]
 
 
 class DeepGP(nn.Module):
-    """A Deep Gaussian Process."""
+    """A Deep Gaussian Process.
 
-    def __init__(
-        self, layers: Iterable[DeepGPLayer], likelihood: DeepGPLikelihood
-    ) -> None:
-        pass
+    Args:
+        layers: A list of Layer objects.
+        likelihood: An output likelihood (one of ``ExpPoisson``, ``Gaussian``, or
+            ``LogisticBernoulli``).
+
+    """
+
+    def __init__(self, layers: Iterable[Layer], likelihood: Likelihood) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList(layers)
+        self.likelihood = likelihood
+
+    def forward(self, x: torch.Tensor) -> dist.Distribution:  # type: ignore
+        """Evaluate the DeepGP model at the points in ``x``."""
+        for layer in self.layers:
+            x = layer(x)
+        return self.likelihood(x)
