@@ -91,7 +91,11 @@ class Layer(nn.Module):
             self.inducing_means, scale_tril=self.inducing_scales
         )
 
-        f_mean = (alpha.t() @ inducing_dist.mean.unsqueeze(-1)).squeeze(-1)
+        mean_x = x @ W
+        mean_z = self.inducing_locs @ W
+        f_mean = mean_x + (
+            alpha.t() @ (inducing_dist.mean - mean_z).unsqueeze(-1)
+        ).squeeze(-1)
         if not self.training:
             return f_mean.t()
 
