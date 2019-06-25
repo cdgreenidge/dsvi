@@ -48,7 +48,7 @@ class Layer(nn.Module):
         self.register_buffer("num_inducing", torch.tensor(self.inducing_locs.size()[0]))
         self.register_buffer("input_dim", torch.tensor(input_dim))
         self.register_buffer("output_dim", torch.tensor(output_dim))
-        self.inducing_means = nn.Parameter(torch.zeros((self.num_inducing,)))
+        self.inducing_means = nn.Parameter(torch.zeros((output_dim, self.num_inducing)))
         self.inducing_scales = nn.Parameter(torch.eye(self.num_inducing))
         self.register_buffer("kl_regularization", torch.tensor(0.0))
 
@@ -86,24 +86,24 @@ class Layer(nn.Module):
             self.inducing_means, scale_tril=self.inducing_scales
         )
 
-        f_mean = alpha.t() @ inducing_dist.mean
+        f_mean = (alpha.t() @ inducing_dist.mean.unsqueeze(-1)).squeeze(-1)
         if not self.training:
             return f_mean.t()
 
         S = inducing_dist.covariance_matrix
         kzz_eval = kzz.evaluate()
         f_cov = self.kernel(x, x, diag=True) - (alpha * ((kzz_eval - S) @ alpha)).sum(
-            dim=0
+            dim=1
         )
 
         if compute_kl:
             prior_dist = dist.MultivariateNormal(
                 torch.zeros_like(self.inducing_means), kzz_eval
             )
-            self.kl_regularization = dist.kl_divergence(inducing_dist, prior_dist)
+            self.kl_regularization = dist.kl_divergence(inducing_dist, prior_dist).sum()
 
         f_dist = dist.Normal(f_mean, torch.sqrt(f_cov), validate_args=True)
-        return f_dist.rsample()[:, None]
+        return f_dist.rsample().t()
 
 
 def _validate_input(x: torch.Tensor) -> None:
