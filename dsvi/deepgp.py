@@ -124,11 +124,10 @@ class Layer(nn.Module):
         # advantage of GPyTorch
         if compute_kl:
             inducing_cov = torch.diag_embed(inducing_dist.variance)
-            kzz2 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
             trace = self.output_dim * torch.sum(
-                torch.diagonal(kzz2.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
+                torch.diagonal(kzz1.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
             )
-            invquad, logdet_1 = kzz2.inv_quad_logdet(
+            invquad, logdet_1 = kzz1.inv_quad_logdet(
                 self.inducing_means.t(), logdet=True
             )
             logdet_1 = self.output_dim * logdet_1  # Scale for output dimensions
