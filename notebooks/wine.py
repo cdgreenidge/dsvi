@@ -29,7 +29,7 @@ def get_data_loaders() -> Tuple[data.DataLoader, data.DataLoader]:
     #  It looks like we should reduce to around 6 or so. But to allow more inducing
     # points, we'll only keep the first 4
     X_reduced = sklearn.preprocessing.minmax_scale(
-        sklearn.decomposition.PCA(1).fit_transform(X_scaled), feature_range=(-1, 1)
+        sklearn.decomposition.PCA(2).fit_transform(X_scaled), feature_range=(-1, 1)
     )
     X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(
         X_reduced, y, test_size=0.2
@@ -63,9 +63,9 @@ def run(num_epochs=32, log_interval: int = 1) -> None:
         (
             dsvi.Layer(
                 kernels.ScaleKernel(kernels.RBFKernel()),
-                input_dim=1,
+                input_dim=2,
                 output_dim=1,
-                grid_num=512,
+                grid_num=16,
             ),
         ),
         dsvi.LogisticBernoulli(),

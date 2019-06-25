@@ -3,6 +3,7 @@ from typing import Iterable, Union
 
 import gpytorch.functions
 import gpytorch.kernels as kernels
+import gpytorch.utils.grid
 import torch
 import torch.distributions as dist
 import torch.nn as nn
@@ -31,7 +32,6 @@ class Layer(nn.Module):
         grid_num: int = 128,
     ):
         super().__init__()
-        assert input_dim == 1
         assert output_dim == 1
 
         if input_dim <= 0:
@@ -44,7 +44,12 @@ class Layer(nn.Module):
             raise ValueError("Grid num must be positive, got {0}".format(grid_num))
 
         self.kernel = kernel
-        self.inducing_locs = torch.linspace(-grid_bound, grid_bound, grid_num)[:, None]
+
+        grid_1d = torch.linspace(-grid_bound, grid_bound, grid_num)[:, None]
+        grid = grid_1d.expand(-1, input_dim)
+        inducing_locs = gpytorch.utils.grid.create_data_from_grid(grid)
+        self.register_buffer("inducing_locs", inducing_locs)
+
         self.register_buffer("num_inducing", torch.tensor(self.inducing_locs.size()[0]))
         self.register_buffer("input_dim", torch.tensor(input_dim))
         self.register_buffer("output_dim", torch.tensor(output_dim))
@@ -73,11 +78,11 @@ class Layer(nn.Module):
             )
             raise ValueError(msg)
 
-        # Calculate linear transformation W for mean function
-        # if self.input_dim == 1:
-        #     W = torch.ones((1,))
-        # else:
-        #     W = torch.svd(x, some=False)[2][:, 0]  # PCA mapping
+        # Calculate linear transformation W for mean function, of size (output_dim, )
+        if self.input_dim == 1:
+            W = torch.ones((1,))
+        else:
+            W = torch.svd(x, some=False)[2][:, 0]  # PCA mapping
 
         kzz = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
         kzx = self.kernel(self.inducing_locs, x).evaluate()
