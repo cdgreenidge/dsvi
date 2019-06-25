@@ -116,14 +116,15 @@ class Layer(nn.Module):
 
         # I'm not bitter.
         kzz1 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
-        f_cov = self.kernel(x, x, diag=True) - (alpha * (kzz1 @ alpha)).sum(dim=0)
-
-        # Ok, that was a lie
+        # Of shape (output_dim, num_inducing, num_inducing)
+        inducing_cov = torch.diag_embed(inducing_dist.variance)
+        f_cov = self.kernel(x, x, diag=True) - (
+            alpha * ((kzz1.evaluate() - inducing_cov) @ alpha)
+        ).sum(dim=1)
 
         # We don't use PyTorch's KL divergence calculation because it doesn't take
         # advantage of GPyTorch
         if compute_kl:
-            inducing_cov = torch.diag_embed(inducing_dist.variance)
             trace = self.output_dim * torch.sum(
                 torch.diagonal(kzz1.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
             )
@@ -137,10 +138,9 @@ class Layer(nn.Module):
         else:
             self.kl_regularization = torch.tensor(0.0)
 
-        f_dist = dist.Independent(
-            dist.Normal(f_mean, torch.sqrt(f_cov.unsqueeze(0))), 1
-        )
-        return f_dist.rsample().t()
+        f_dist = dist.Independent(dist.Normal(f_mean, torch.sqrt(f_cov)), 1)
+        out = f_dist.rsample().t()
+        return out
 
 
 def _validate_input(x: torch.Tensor) -> None:

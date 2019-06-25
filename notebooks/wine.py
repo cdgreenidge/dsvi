@@ -1,7 +1,7 @@
 """Tests a Deep GP model on the breast cancer datset."""
 
 #%%
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 from gpytorch import kernels
 import ignite
@@ -11,9 +11,11 @@ import sklearn.decomposition
 import sklearn.model_selection
 import sklearn.preprocessing
 import torch
+import torch.autograd
 import torch.cuda
 import torch.optim as optim
 import torch.utils.data as data
+import tqdm
 
 import dsvi
 
@@ -27,7 +29,7 @@ def get_data_loaders() -> Tuple[data.DataLoader, data.DataLoader]:
     #  It looks like we should reduce to around 6 or so. But to allow more inducing
     # points, we'll only keep the first 4
     X_reduced = sklearn.preprocessing.minmax_scale(
-        sklearn.decomposition.PCA(2).fit_transform(X_scaled), feature_range=(-1, 1)
+        sklearn.decomposition.PCA(1).fit_transform(X_scaled), feature_range=(-1, 1)
     )
     X_train, X_test, y_train, y_test = sklearn.model_selection.train_test_split(
         X_reduced, y, test_size=0.2
@@ -54,16 +56,16 @@ def get_data_loaders() -> Tuple[data.DataLoader, data.DataLoader]:
     return train_loader, val_loader
 
 
-def run() -> None:
+def run(num_epochs=32, log_interval: int = 1) -> None:
     train_loader, val_loader = get_data_loaders()
     num_data = len(train_loader) * train_loader.batch_size
     model = dsvi.DeepGP(
         (
             dsvi.Layer(
                 kernels.ScaleKernel(kernels.RBFKernel()),
-                input_dim=2,
+                input_dim=1,
                 output_dim=1,
-                grid_num=8,
+                grid_num=256,
             ),
         ),
         dsvi.LogisticBernoulli(),
@@ -77,18 +79,28 @@ def run() -> None:
 
     def train_and_store_loss(
         engine: ignite.engine.Engine, batch: Tuple[torch.Tensor, torch.Tensor]
-    ) -> float:
+    ) -> Dict[str, Any]:
         inputs, targets = batch
         optimizer.zero_grad()
-        loss = model.negative_elbo(
-            inputs, targets.unsqueeze(-1), num_data=num_data, num_samples=1
-        )
-        loss.backward()
+        with torch.autograd.detect_anomaly():
+            loss = model.negative_elbo(
+                inputs, targets.unsqueeze(-1), num_data=num_data, num_samples=1
+            )
+            loss.backward()
         optimizer.step()
-        return loss.item()
+        return {"loss": loss.item()}
 
-    engine = ignite.engine.Engine(train_and_store_loss)
-    engine.run(train_loader)
+    desc = "ITERATION - loss: {:.2f}"
+    pbar = tqdm.tqdm(initial=0, leave=False, total=num_epochs, desc=desc.format(0))
+
+    trainer = ignite.engine.Engine(train_and_store_loss)
+
+    @trainer.on(ignite.engine.Events.EPOCH_COMPLETED)
+    def log_training_loss(engine):
+        pbar.desc = desc.format(engine.state.output["loss"])
+        pbar.update()
+
+    trainer.run(train_loader, num_epochs)
 
 
 run()
