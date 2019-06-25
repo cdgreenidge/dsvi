@@ -65,7 +65,7 @@ def run(num_epochs=32, log_interval: int = 1) -> None:
                 kernels.ScaleKernel(kernels.RBFKernel()),
                 input_dim=1,
                 output_dim=1,
-                grid_num=256,
+                grid_num=512,
             ),
         ),
         dsvi.LogisticBernoulli(),

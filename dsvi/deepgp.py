@@ -31,6 +31,8 @@ class Layer(nn.Module):
         grid_num: int = 128,
     ):
         super().__init__()
+        assert input_dim == 1
+        assert output_dim == 1
 
         if input_dim <= 0:
             raise ValueError("Input dim must be positive, got {0}".format(input_dim))
@@ -41,24 +43,13 @@ class Layer(nn.Module):
         if grid_num <= 0:
             raise ValueError("Grid num must be positive, got {0}".format(grid_num))
 
-        grid_1d = torch.linspace(-grid_bound, grid_bound, steps=grid_num)
-        grid = grid_1d[:, None].repeat(1, input_dim)
-        self.kernel = kernels.GridKernel(kernel, grid)
-
+        self.kernel = kernel
+        self.inducing_locs = torch.linspace(-grid_bound, grid_bound, grid_num)[:, None]
+        self.register_buffer("num_inducing", torch.tensor(self.inducing_locs.size()[0]))
         self.register_buffer("input_dim", torch.tensor(input_dim))
         self.register_buffer("output_dim", torch.tensor(output_dim))
-
-        self.inducing_locs = self.kernel.full_grid
-        self.register_buffer("num_inducing", torch.tensor(self.inducing_locs.size()[0]))
-
-        # Each of these parameters has shape (output_dim, num_inducing), i.e. they are
-        # batched across output dimension
-        self.inducing_means = nn.Parameter(
-            torch.zeros((self.output_dim, self.num_inducing))
-        )
-        self.inducing_scales = nn.Parameter(
-            torch.ones(self.output_dim, self.num_inducing)
-        )
+        self.inducing_means = nn.Parameter(torch.zeros((self.num_inducing,)))
+        self.inducing_scales = nn.Parameter(torch.eye(self.num_inducing))
         self.register_buffer("kl_regularization", torch.tensor(0.0))
 
     def forward(  # type: ignore
@@ -83,64 +74,36 @@ class Layer(nn.Module):
             raise ValueError(msg)
 
         # Calculate linear transformation W for mean function
-        if self.input_dim == 1:
-            W = torch.ones((1,))
-        else:
-            W = torch.svd(x, some=False)[2][:, 0]  # PCA mapping
+        # if self.input_dim == 1:
+        #     W = torch.ones((1,))
+        # else:
+        #     W = torch.svd(x, some=False)[2][:, 0]  # PCA mapping
 
-        kzz0 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
+        kzz = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
         kzx = self.kernel(self.inducing_locs, x).evaluate()
-        alpha = gpytorch.functions.inv_matmul(kzz0, kzx)
-        inducing_dist = dist.Independent(
-            dist.Normal(self.inducing_means, self.inducing_scales), 1
+        alpha = gpytorch.functions.inv_matmul(kzz, kzx)
+        inducing_dist = dist.MultivariateNormal(
+            self.inducing_means, scale_tril=self.inducing_scales
         )
 
-        # Mean function evaluated at x. Has size (1, num_x) so it broadcasts with
-        # the batch dimensions of inducing_dist.
-        m_x = (x @ W).unsqueeze(0)
-        # Mean function evaluated at inducing locations. Has size (1, num_inducing).
-        m_z = (self.inducing_locs @ W).unsqueeze(0)
-        # The unsqueeze(-1) forces batch matrix multiplication across the output
-        # dimensions, and the squeeze() removes the uneccessary dimension we added
-        f_mean = (
-            m_x + (alpha.t() @ ((inducing_dist.mean - m_z).unsqueeze(-1))).squeeze()
-        )
-
+        f_mean = alpha.t() @ inducing_dist.mean
         if not self.training:
             return f_mean.t()
 
-        # f_cov has no batch dim, so we will have to add one later.
-        # We also have to reconstruct the lazy kernel to avoid freeing the computation
-        # graph twice because the lazy kernel is a leaky abstraction.
-        # It took me a whole afternoon to figure this out.
+        S = inducing_dist.covariance_matrix
+        kzz_eval = kzz.evaluate()
+        f_cov = self.kernel(x, x, diag=True) - (alpha * ((kzz_eval - S) @ alpha)).sum(
+            dim=0
+        )
 
-        # I'm not bitter.
-        kzz1 = self.kernel(self.inducing_locs, self.inducing_locs).add_jitter()
-        # Of shape (output_dim, num_inducing, num_inducing)
-        inducing_cov = torch.diag_embed(inducing_dist.variance)
-        f_cov = self.kernel(x, x, diag=True) - (
-            alpha * ((kzz1.evaluate() - inducing_cov) @ alpha)
-        ).sum(dim=1)
-
-        # We don't use PyTorch's KL divergence calculation because it doesn't take
-        # advantage of GPyTorch
         if compute_kl:
-            trace = self.output_dim * torch.sum(
-                torch.diagonal(kzz1.inv_matmul(inducing_cov), dim1=-2, dim2=-1)
+            prior_dist = dist.MultivariateNormal(
+                torch.zeros_like(self.inducing_means), kzz_eval
             )
-            invquad, logdet_1 = kzz1.inv_quad_logdet(
-                self.inducing_means.t(), logdet=True
-            )
-            logdet_1 = self.output_dim * logdet_1  # Scale for output dimensions
-            logdet_0 = torch.sum(torch.log(inducing_dist.variance))
-            k = self.output_dim * self.num_inducing
-            self.kl_regularization = 0.5 * (trace + invquad - k + logdet_1 - logdet_0)
-        else:
-            self.kl_regularization = torch.tensor(0.0)
+            self.kl_regularization = dist.kl_divergence(inducing_dist, prior_dist)
 
-        f_dist = dist.Independent(dist.Normal(f_mean, torch.sqrt(f_cov)), 1)
-        out = f_dist.rsample().t()
-        return out
+        f_dist = dist.Normal(f_mean, torch.sqrt(f_cov), validate_args=True)
+        return f_dist.rsample()[:, None]
 
 
 def _validate_input(x: torch.Tensor) -> None:
