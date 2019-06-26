@@ -32,7 +32,6 @@ class Layer(nn.Module):
         grid_num: int = 128,
     ):
         super().__init__()
-        assert output_dim == 1
 
         if input_dim <= 0:
             raise ValueError("Input dim must be positive, got {0}".format(input_dim))
@@ -45,9 +44,8 @@ class Layer(nn.Module):
 
         self.kernel = kernel
 
-        grid_1d = torch.linspace(-grid_bound, grid_bound, grid_num)[:, None]
-        grid = grid_1d.expand(-1, input_dim)
-        inducing_locs = gpytorch.utils.grid.create_data_from_grid(grid)
+        sobol = torch.quasirandom.SobolEngine(input_dim)
+        inducing_locs = (2.0 * sobol.draw(grid_num) - 1.0) * grid_bound
         self.register_buffer("inducing_locs", inducing_locs)
 
         self.register_buffer("num_inducing", torch.tensor(self.inducing_locs.size()[0]))
