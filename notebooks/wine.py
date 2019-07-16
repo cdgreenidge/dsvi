@@ -56,51 +56,77 @@ def get_data_loaders() -> Tuple[data.DataLoader, data.DataLoader]:
     return train_loader, val_loader
 
 
-def run(num_epochs=32, log_interval: int = 1) -> None:
+def run(num_epochs=1024, log_interval: int = 1) -> None:
     train_loader, val_loader = get_data_loaders()
     num_data = len(train_loader) * train_loader.batch_size
     model = dsvi.DeepGP(
-        (
+        layers=(
             dsvi.Layer(
                 kernels.ScaleKernel(kernels.RBFKernel()),
                 input_dim=2,
                 output_dim=1,
-                grid_num=32,
+                grid_num=128,
+                grid_bound=2.0,
+            ),
+            dsvi.Layer(
+                kernels.ScaleKernel(kernels.RBFKernel()),
+                input_dim=1,
+                output_dim=1,
+                grid_num=8,
+                grid_bound=2.0,
             ),
         ),
-        dsvi.LogisticBernoulli(),
+        likelihood=dsvi.LogisticBernoulli(),
     )
 
     device = "cpu"
     if torch.cuda.is_available():
         device = "cuda"
 
-    optimizer = optim.Adam(model.parameters())
+    optimizer = optim.Adam(model.parameters(), lr=0.01)
 
     def train_and_store_loss(
         engine: ignite.engine.Engine, batch: Tuple[torch.Tensor, torch.Tensor]
     ) -> Dict[str, Any]:
+        model.train()
         inputs, targets = batch
         optimizer.zero_grad()
-        with torch.autograd.detect_anomaly():
-            loss = model.negative_elbo(
-                inputs, targets.unsqueeze(-1), num_data=num_data, num_samples=1
-            )
-            loss.backward()
+        loss = model.negative_elbo(
+            inputs, targets.unsqueeze(-1), num_data=num_data, num_samples=3
+        )
+        loss.backward()
         optimizer.step()
         return {"loss": loss.item()}
 
-    desc = "ITERATION - loss: {:.2f}"
-    pbar = tqdm.tqdm(initial=0, leave=False, total=num_epochs, desc=desc.format(0))
-
     trainer = ignite.engine.Engine(train_and_store_loss)
+
+    evaluator = ignite.engine.create_supervised_evaluator(
+        model,
+        metrics={"accuracy": ignite.metrics.Accuracy()},
+        output_transform=lambda x, y, y_pred: ((y_pred.mean > 0.5).float(), y),
+    )
+
+    desc = "loss: {:.2f}"
+    pbar = tqdm.tqdm(initial=0, leave=False, total=num_epochs, desc=desc.format(0))
 
     @trainer.on(ignite.engine.Events.EPOCH_COMPLETED)
     def log_training_loss(engine):
         pbar.desc = desc.format(engine.state.output["loss"])
         pbar.update()
 
-    trainer.run(train_loader, num_epochs)
+    @trainer.on(ignite.engine.Events.EPOCH_COMPLETED)
+    def log_validation_results(engine):
+        model.eval()
+        evaluator.run(val_loader)
+        metrics = evaluator.state.metrics
+        avg_accuracy = metrics["accuracy"]
+        tqdm.tqdm.write(
+            "Validation Results - Epoch: {}  Avg accuracy: {:.2f}".format(
+                engine.state.epoch, avg_accuracy
+            )
+        )
+
+    trainer.run(train_loader, max_epochs=num_epochs)
 
 
 run()
